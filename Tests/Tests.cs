@@ -293,6 +293,14 @@ namespace SqlMapper
 
         }
 
+        struct CarWithAllProps
+        {
+            public string Name { get; set; }
+            public int Age { get; set; }
+
+            public Car.TrapEnum Trap { get; set; }
+        }
+
         public void TestStructs()
         {
             var car = connection.Query<Car>("select 'Ford' Name, 21 Age, 2 Trap").First();
@@ -300,6 +308,17 @@ namespace SqlMapper
             car.Age.IsEqualTo(21);
             car.Name.IsEqualTo("Ford");
             ((int)car.Trap).IsEqualTo(2);
+        }
+
+        public void TestStructAsParam()
+        {
+            var car1 = new CarWithAllProps { Name = "Ford", Age = 21, Trap = Car.TrapEnum.B };
+            // note Car has Name as a field; parameters only respect properties at the moment
+            var car2 = connection.Query<CarWithAllProps>("select @Name Name, @Age Age, @Trap Trap", car1).First();
+
+            car2.Name.IsEqualTo(car1.Name);
+            car2.Age.IsEqualTo(car1.Age);
+            car2.Trap.IsEqualTo(car1.Trap);
         }
 
         public void SelectListInt()
@@ -3178,7 +3197,23 @@ option (optimize for (@vals unKnoWn))";
                 ex.Message.Equals("The table type parameter 'ids' must have a valid type name.");
             }
         }
+        public void SO26468710_InWithTVPs()
+        {
+            // this is just to make it re-runnable; normally you only do this once
+            try { connection.Execute("drop type MyIdList"); } catch { }
+            connection.Execute("create type MyIdList as table(id int);");
 
+            DataTable ids = new DataTable {
+                Columns = {{"id", typeof(int)}},
+                Rows = {{1},{3},{5}}
+            };
+            ids.SetTypeName("MyIdList");
+            int sum = connection.Query<int>(@"
+            declare @tmp table(id int not null);
+            insert @tmp (id) values(1), (2), (3), (4), (5), (6), (7);
+            select * from @tmp t inner join @ids i on i.id = t.id", new { ids }).Sum();
+            sum.IsEqualTo(9);
+        }
         public void DataTableParametersWithExtendedProperty()
         {
             try { connection.Execute("drop proc #DataTableParameters"); } catch { }
@@ -4070,6 +4105,50 @@ SELECT * FROM @Issue192 WHERE Field IN @µ AND Field_1 IN @µµ",
             ((int)rows.Field).IsEqualTo(2);
             ((int)rows.Field_1).IsEqualTo(2);
         }
+
+        class _ExplicitConstructors
+        {
+            public int Field { get; set; }
+            public int Field_1 { get; set; }
+
+            private bool WentThroughProperConstructor;
+
+            public _ExplicitConstructors() { }
+
+            [ExplicitConstructor]
+            public _ExplicitConstructors(string foo, int bar)
+            {
+                WentThroughProperConstructor = true;
+            }
+
+            public bool GetWentThroughProperConstructor()
+            {
+                return WentThroughProperConstructor;
+            }
+        }
+
+        public void ExplicitConstructors()
+        {
+            var rows = connection.Query<_ExplicitConstructors>(@"
+declare @ExplicitConstructors table (
+    Field INT NOT NULL PRIMARY KEY IDENTITY(1,1),
+    Field_1 INT NOT NULL);
+insert @ExplicitConstructors(Field_1) values (1);
+SELECT * FROM @ExplicitConstructors"
+).ToList();
+
+            rows.Count.IsEqualTo(1);
+            rows[0].Field.IsEqualTo(1);
+            rows[0].Field_1.IsEqualTo(1);
+            rows[0].GetWentThroughProperConstructor().IsTrue();
+        }
+
+        public void Issue220_InParameterCanBeSpecifiedInAnyCase()
+        {
+            connection.Query<int>("select * from (select 1 as Id) as X where Id in @ids", new {Ids = new[] {1}})
+                      .IsSequenceEqualTo(new[] {1});
+        }
+
 #if POSTGRESQL
 
         class Cat
